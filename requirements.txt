@@ -1,3 +1,6 @@
 typer
 typer-config
 easy-tpp
+matplotlib
+datasets
+ConfigSpace

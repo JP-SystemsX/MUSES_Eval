@@ -1,0 +1,24 @@
+
+trainer_config:
+  batch_size: [32, 64, 128, 256, 512]
+  max_epoch: [1, 2, 3, 4, 5]
+  shuffle: [False, True] 
+  optimizer: adam
+  learning_rate: (1.e-5, 5.e-3)  
+  valid_freq: 1 
+  use_tfb: True
+  seed: 2019
+  gpu: -1
+model_config:
+  hidden_size: [8, 16, 32, 64] 
+  loss_integral_num_sample_per_step: [5, 10, 20, 50]
+  thinning:
+    num_seq: 10 
+    num_sample: 1
+    num_exp: 500 # number of i.i.d. Exp(intensity_bound) draws at one time in thinning algorithm
+    look_ahead_time: 10
+    patience_counter: 5 # the maximum iteration used in adaptive thinning
+    over_sample_rate: 5
+    num_samples_boundary: 5
+    dtime_max: 5
+    num_step_gen: 1
