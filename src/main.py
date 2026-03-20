@@ -1,5 +1,6 @@
 from typer import Typer
 from easy_tpp.preprocess import TPPDataLoader
+from easy_tpp.runner.base_runner import Runner, logger
 from easy_tpp.utils import py_assert
 import datasets as ds
 import os
@@ -16,8 +17,7 @@ os.chdir(Path(__file__).parent)
 
 os.environ["HF_TOKEN"] = "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" #TODO Remove
 
-# Overwrite EasyTPP data loader to also support DUESE
-
+# Overwrite EasyTPP data loader to also support unofficial datasets
 def _build_input_from_json(self, source_dir, split):
     """Load and process data from a JSON file.
 
@@ -49,8 +49,32 @@ def _build_input_from_json(self, source_dir, split):
         'time_delta_seqs': data['time_since_last_event']
     }
 
+# We replace the evaluate function to return ANY metric instead of only RMSE
+def evaluate(self, valid_loader=None, return_all_metrics=False, **kwargs):
+    if valid_loader is None:
+        valid_loader = self._data_loader.valid_loader()
+
+    logger.info(f'Data \'{self.runner_config.base_config.dataset_id}\' loaded...')
+
+    timer = self.timer
+    timer.start()
+    model_id = self.runner_config.base_config.model_id
+    logger.info(f'Start {model_id} evaluation...')
+
+    metric = self._evaluate_model(
+        valid_loader,
+        **kwargs
+    )
+    logger.info(f'End {model_id} evaluation! Cost time: {timer.end()}')
+    print(f'{model_id} evaluation metric: {metric}')
+    if return_all_metrics:
+        return metric
+    return metric['rmse']  # return a list of scalr for HPO to use
+
+
 # Monkey Patch
 TPPDataLoader._build_input_from_json = _build_input_from_json
+Runner.evaluate = evaluate
 
 def to_builtin(x):
     if isinstance(x, np.generic):
@@ -73,8 +97,8 @@ def main(data_id: int = 0, model_id: int = 0, trial_count: int = 5):
     model_name = model_config_file.stem
 
     # save config to yaml
-    config_adress = Path(f'../tmp/{model_name}-{ds_name}.yaml')
-    config_adress.parent.mkdir(exist_ok=True, parents=True)
+    config_address = Path(f'../tmp/{model_name}-{ds_name}.yaml')
+    config_address.parent.mkdir(exist_ok=True, parents=True)
     config_ = {
         "pipeline_config_id": "runner_config",
         "data": {
@@ -124,15 +148,15 @@ def main(data_id: int = 0, model_id: int = 0, trial_count: int = 5):
             "model_config": model_cfg,
         }
         # save config to yaml
-        with open(config_adress, 'w') as f:
+        with open(config_address, 'w') as f:
             yaml.safe_dump(config, f)
 
-        config = Config.build_from_yaml_file(str(config_adress), experiment_id=model_name)
+        config = Config.build_from_yaml_file(str(config_address), experiment_id=model_name)
 
         model_runner = Runner.build_from_config(config)
 
         model_runner.run()
-        results = model_runner.evaluate()
+        results = model_runner.evaluate(return_all_metrics=True)
         print("Hello EasyTPP!")
     # TODO Load MetaData
     # TODO Load Data
