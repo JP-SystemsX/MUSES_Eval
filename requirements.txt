@@ -4,3 +4,4 @@ easy-tpp
 matplotlib
 datasets
 ConfigSpace
+scikit-learn

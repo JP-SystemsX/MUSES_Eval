@@ -12,10 +12,17 @@ from ConfigSpace import ConfigurationSpace
 from ast import literal_eval
 import numpy as np
 from copy import deepcopy
+from easy_tpp.utils.const import PredOutputIndex
+from easy_tpp.utils.metrics import MetricsHelper
+from sklearn.metrics import f1_score
 
 os.chdir(Path(__file__).parent)
 
 os.environ["HF_TOKEN"] = "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" #TODO Remove
+
+# ============================================================= #
+# Add support for additional datasources and metrics to EasyTPP #
+# ============================================================= #
 
 # Overwrite EasyTPP data loader to also support unofficial datasets
 def _build_input_from_json(self, source_dir, split):
@@ -76,6 +83,35 @@ def evaluate(self, valid_loader=None, return_all_metrics=False, **kwargs):
 TPPDataLoader._build_input_from_json = _build_input_from_json
 Runner.evaluate = evaluate
 
+@MetricsHelper.register(name='f1_macro', direction=MetricsHelper.MAXIMIZE, overwrite=False)
+def f1_macro_metric_function(predictions, labels, **kwargs):
+    """Compute macro F1 metrics of the type predictions."""
+    seq_mask = kwargs.get('seq_mask')
+    if seq_mask is None or len(seq_mask) == 0:
+        # If mask is empty or None, use all predictions
+        pred = predictions[PredOutputIndex.TypePredIndex]
+        label = labels[PredOutputIndex.TypePredIndex]
+    else:
+        pred = predictions[PredOutputIndex.TypePredIndex][seq_mask]
+        label = labels[PredOutputIndex.TypePredIndex][seq_mask]
+    return f1_score(label, pred, average='macro')
+
+@MetricsHelper.register(name='f1_micro', direction=MetricsHelper.MAXIMIZE, overwrite=False)
+def f1_micro_metric_function(predictions, labels, **kwargs):
+    """Compute micro F1 metrics of the type predictions."""
+    seq_mask = kwargs.get('seq_mask')
+    if seq_mask is None or len(seq_mask) == 0:
+        # If mask is empty or None, use all predictions
+        pred = predictions[PredOutputIndex.TypePredIndex]
+        label = labels[PredOutputIndex.TypePredIndex]
+    else:
+        pred = predictions[PredOutputIndex.TypePredIndex][seq_mask]
+        label = labels[PredOutputIndex.TypePredIndex][seq_mask]
+    return f1_score(label, pred, average='micro')
+
+
+
+
 def to_builtin(x):
     if isinstance(x, np.generic):
         return x.item()
@@ -134,7 +170,7 @@ def main(data_id: int = 0, model_id: int = 0, trial_count: int = 5):
         trainer_cfg = {k: to_builtin(v) for k, v in trainer_cfg.items()}
         model_cfg = dict(model_cfg)
         model_cfg = {k: to_builtin(v) for k, v in model_cfg.items()}
-        trainer_cfg["metrics"] = [ 'acc', 'rmse' ] 
+        trainer_cfg["metrics"] = ['acc', 'rmse', 'f1_macro', 'f1_micro'] 
         config[model_name] = {
             "base_config": {
                 "stage": "train",
