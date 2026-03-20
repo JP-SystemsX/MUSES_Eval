@@ -19,6 +19,8 @@ from utils import to_builtin, store_complex_dict, string_to_dict
 import uuid
 import sqlite3
 import pandas as pd
+import torch
+
 
 os.chdir(Path(__file__).parent)
 
@@ -215,18 +217,35 @@ def main(data_id: int = 0, model_id: int = 0, trial_count: int = 2):
         "data": string_to_dict(best_row["data"]),
         "train": string_to_dict(best_row["train"]),
     }
-    best_config["train"]["trainer_config"]["metrics"] = []
+    # best_config["train"]["trainer_config"]["metrics"] = []
 
-    with open(config_address, 'w') as f:
-        yaml.safe_dump(best_config, f)
 
-    runner_config = Config.build_from_yaml_file(str(config_address), experiment_id="train")
+    for seed in range(5): 
+        print(f"Retraining with best config, seed {seed}...")
+        torch.manual_seed(seed)
+        np.random.seed(seed)
 
-    model_runner = Runner.build_from_config(runner_config)
+        # Also adjust seed of the trainer
+        best_config["train"]["trainer_config"]["seed"] = seed
+        with open(config_address, 'w') as f:
+            yaml.safe_dump(best_config, f)
+        
+        runner_config = Config.build_from_yaml_file(str(config_address), experiment_id="train")
 
-    model_runner.run()
-    results = model_runner.evaluate(return_all_metrics=True)
-    predictions = model_runner.gen()
+        model_runner = Runner.build_from_config(runner_config)
+
+        model_runner.run()
+        valid_results = model_runner.evaluate(return_all_metrics=True)
+        test_results = model_runner.evaluate(model_runner._data_loader.test_loader(), return_all_metrics=True) # TODO I think making a prediction after the sequence has ended, leads to worthless forecasts (PAD tokens) --> Eval instead.
+        train_results = model_runner.evaluate(model_runner._data_loader.train_loader(), return_all_metrics=True) # To check for overfitting
+
+        results = deepcopy(best_config)
+        results["seed"] = seed
+        for split, r in[("valid", valid_results), ("test", test_results), ("train", train_results)]:
+            for metric_name, metric_value in r.items():
+                results[f"{split}_{metric_name}"] = metric_value
+
+        store_complex_dict(results, database_path="../results.db", table_name="final_results")
 
     # TODO Load MetaData
     # TODO Load Data
