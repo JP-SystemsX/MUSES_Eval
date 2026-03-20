@@ -15,6 +15,10 @@ from copy import deepcopy
 from easy_tpp.utils.const import PredOutputIndex
 from easy_tpp.utils.metrics import MetricsHelper
 from sklearn.metrics import f1_score
+from utils import to_builtin, store_complex_dict, string_to_dict
+import uuid
+import sqlite3
+import pandas as pd
 
 os.chdir(Path(__file__).parent)
 
@@ -111,16 +115,12 @@ def f1_micro_metric_function(predictions, labels, **kwargs):
 
 
 
-
-def to_builtin(x):
-    if isinstance(x, np.generic):
-        return x.item()
-    return x
-
 app = Typer(pretty_exceptions_enable=False)
 
 @app.command()
-def main(data_id: int = 0, model_id: int = 0, trial_count: int = 5):
+def main(data_id: int = 0, model_id: int = 0, trial_count: int = 2):
+    search_id = uuid.uuid4()
+
     ds_names = sorted(ds.get_dataset_config_names("ddrg/NEDTBench"))
     ds_name = ds_names[data_id]
 
@@ -133,7 +133,7 @@ def main(data_id: int = 0, model_id: int = 0, trial_count: int = 5):
     model_name = model_config_file.stem
 
     # save config to yaml
-    config_address = Path(f'../tmp/{model_name}-{ds_name}.yaml')
+    config_address = Path(f'../tmp/{model_name}-{ds_name}-{search_id}.yaml')
     config_address.parent.mkdir(exist_ok=True, parents=True)
     config_ = {
         "pipeline_config_id": "runner_config",
@@ -171,7 +171,7 @@ def main(data_id: int = 0, model_id: int = 0, trial_count: int = 5):
         model_cfg = dict(model_cfg)
         model_cfg = {k: to_builtin(v) for k, v in model_cfg.items()}
         trainer_cfg["metrics"] = ['acc', 'rmse', 'f1_macro', 'f1_micro'] 
-        config[model_name] = {
+        config["train"] = {
             "base_config": {
                 "stage": "train",
                 "backend": "torch",
@@ -187,13 +187,47 @@ def main(data_id: int = 0, model_id: int = 0, trial_count: int = 5):
         with open(config_address, 'w') as f:
             yaml.safe_dump(config, f)
 
-        config = Config.build_from_yaml_file(str(config_address), experiment_id=model_name)
+        runner_config = Config.build_from_yaml_file(str(config_address), experiment_id="train")
 
-        model_runner = Runner.build_from_config(config)
+        model_runner = Runner.build_from_config(runner_config)
 
         model_runner.run()
         results = model_runner.evaluate(return_all_metrics=True)
+
+        # Log results to DB
+        config["search_id"] = str(search_id)
+        config.update(results)
+        store_complex_dict(config, database_path="../results.db", table_name="trials")
         print("Hello EasyTPP!")
+
+    # Get best config from db
+    conn = sqlite3.connect("../results.db")
+    df = pd.read_sql_query("SELECT * FROM trials WHERE search_id = ?", conn, params=[str(search_id)])
+    min_rmse = df["rmse"].min()
+    max_rmse = df["rmse"].max()
+    df["score"] = df["f1_macro"] + df["f1_micro"] + df["acc"] - 3 * (df["rmse"] - min_rmse) / (max_rmse - min_rmse)  
+    best_row = df.loc[df["score"].idxmax()]
+    print("Best Config: ", best_row)
+
+    # Retrain best config
+    best_config = {
+        "pipeline_config_id": best_row["pipeline_config_id"],
+        "data": string_to_dict(best_row["data"]),
+        "train": string_to_dict(best_row["train"]),
+    }
+    best_config["train"]["trainer_config"]["metrics"] = []
+
+    with open(config_address, 'w') as f:
+        yaml.safe_dump(best_config, f)
+
+    runner_config = Config.build_from_yaml_file(str(config_address), experiment_id="train")
+
+    model_runner = Runner.build_from_config(runner_config)
+
+    model_runner.run()
+    results = model_runner.evaluate(return_all_metrics=True)
+    predictions = model_runner.gen()
+
     # TODO Load MetaData
     # TODO Load Data
     # TODO Load Model
