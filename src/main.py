@@ -139,7 +139,7 @@ def main(data_id: int = 0, model_id: int = 0, trial_count: int = 2):
     config_address.parent.mkdir(exist_ok=True, parents=True)
     config_ = {
         "pipeline_config_id": "runner_config",
-        "data": {
+        "data":   {
             ds_name: {
                 "data_format": "json",
                 "train_dir": f"ddrg/NEDTBench/{ds_name}",
@@ -148,7 +148,7 @@ def main(data_id: int = 0, model_id: int = 0, trial_count: int = 2):
                 "data_specs": {
                     "num_event_types": class_count,
                     "pad_token_id": class_count,
-                    "padding_side": "right"
+                    "padding_side": "left" 
                 }
             }
         },
@@ -157,13 +157,15 @@ def main(data_id: int = 0, model_id: int = 0, trial_count: int = 2):
 
     # Simple Random Search
     # Load Search Space from yaml
-    search_space = yaml.safe_load(open(model_config_file))
-    for key in search_space.keys():
-        for sub_key in search_space[key].keys():
-            if isinstance(search_space[key][sub_key], str) and search_space[key][sub_key].startswith("(") and search_space[key][sub_key].endswith(")"):
-                search_space[key][sub_key] = literal_eval(search_space[key][sub_key])
-    cs_trainer = ConfigurationSpace(search_space["trainer_config"])
-    cs_model = ConfigurationSpace(search_space["model_config"])
+    model_search_space = yaml.safe_load(open(model_config_file))
+    trainer_search_space = yaml.safe_load(open("../configs/trainer_search_space.yml"))
+    for search_space in [model_search_space, trainer_search_space]:
+        for key in search_space.keys():
+            if isinstance(search_space[key], str) and search_space[key].startswith("(") and search_space[key].endswith(")"):
+                search_space[key] = literal_eval(search_space[key])
+
+    cs_trainer = ConfigurationSpace(trainer_search_space)
+    cs_model = ConfigurationSpace(model_search_space)
 
     for trainer_cfg, model_cfg in zip(list(cs_trainer.sample_configuration(size=trial_count)), list(cs_model.sample_configuration(size=trial_count))):
         print("Trial with configs: ", trainer_cfg, model_cfg)
@@ -236,7 +238,7 @@ def main(data_id: int = 0, model_id: int = 0, trial_count: int = 2):
 
         model_runner.run()
         valid_results = model_runner.evaluate(return_all_metrics=True)
-        test_results = model_runner.evaluate(model_runner._data_loader.test_loader(), return_all_metrics=True) # TODO I think making a prediction after the sequence has ended, leads to worthless forecasts (PAD tokens) --> Eval instead.
+        test_results = model_runner.evaluate(model_runner._data_loader.test_loader(), return_all_metrics=True) 
         train_results = model_runner.evaluate(model_runner._data_loader.train_loader(), return_all_metrics=True) # To check for overfitting
 
         results = deepcopy(best_config)
