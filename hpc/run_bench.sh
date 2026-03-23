@@ -3,12 +3,12 @@
 #SBATCH --gres=gpu:1 # GPU Count
 #SBATCH --nodes=1
 #SBATCH --mem=140G # Working Memory
-#SBATCH --time=48:00:00  # Should take at most 20h but in rare exceptions might take longer 
+#SBATCH --time=72:00:00  # Should take at most 20h but in rare exceptions might take longer 
 #SBATCH --account=p_llm_timeseries
 #SBATCH --job-name=DUESE
 #SBATCH --output=hpc/logs/DUESE-%j-%a.out  # Output Address 
 #SBATCH --error=hpc/logs/DUESE-%j-%a.err  # Output Address
-#SBATCH --array=0-135%2
+#SBATCH --array=0-135%10
 
 # Derive parameters
 DATA_ID=$(( SLURM_ARRAY_TASK_ID % 15 ))           # number between 0–35

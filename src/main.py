@@ -107,19 +107,6 @@ def f1_macro_metric_function(predictions, labels, **kwargs):
         label = labels[PredOutputIndex.TypePredIndex][seq_mask]
     return f1_score(label, pred, average='macro')
 
-@MetricsHelper.register(name='f1_micro', direction=MetricsHelper.MAXIMIZE, overwrite=False)
-def f1_micro_metric_function(predictions, labels, **kwargs):
-    """Compute micro F1 metrics of the type predictions."""
-    seq_mask = kwargs.get('seq_mask')
-    if seq_mask is None or len(seq_mask) == 0:
-        # If mask is empty or None, use all predictions
-        pred = predictions[PredOutputIndex.TypePredIndex]
-        label = labels[PredOutputIndex.TypePredIndex]
-    else:
-        pred = predictions[PredOutputIndex.TypePredIndex][seq_mask]
-        label = labels[PredOutputIndex.TypePredIndex][seq_mask]
-    return f1_score(label, pred, average='micro')
-
 
 def get_item_override(self, key):
     """Some models access config via get_item instead of attribute access. This workaround allows both."""
@@ -190,8 +177,12 @@ def main(data_id: int = 0, model_id: int = 0, trial_count: int = 2):
     cs_trainer = ConfigurationSpace(trainer_search_space)
     cs_model = ConfigurationSpace(model_search_space)
 
+    search_start_time = time()
     for trainer_cfg, model_cfg in tqdm(zip(list(cs_trainer.sample_configuration(size=trial_count)), list(cs_model.sample_configuration(size=trial_count))), total=trial_count):
         print("Trial with configs: ", trainer_cfg, model_cfg)
+        if time() - search_start_time > 48 * 60 * 60:  # Stop search after 48 hours
+            print("Stopping search after 48 hours.")
+            break
 
         gc.collect()
         torch.cuda.empty_cache()
@@ -202,7 +193,7 @@ def main(data_id: int = 0, model_id: int = 0, trial_count: int = 2):
         trainer_cfg = {k: to_builtin(v) for k, v in trainer_cfg.items()}
         model_cfg = dict(model_cfg)
         model_cfg = {k: to_builtin(v) for k, v in model_cfg.items()}
-        trainer_cfg["metrics"] = ['acc', 'rmse', 'f1_macro', 'f1_micro'] 
+        trainer_cfg["metrics"] = ['acc', 'rmse', 'f1_macro'] 
         config["train"] = {
             "base_config": {
                 "stage": "train",
@@ -234,6 +225,7 @@ def main(data_id: int = 0, model_id: int = 0, trial_count: int = 2):
             config["trial_time"] = time() - start_time
             config["timestamp"] = datetime.datetime.now().isoformat()
             config["dataset"] = ds_name
+            config["model"] = model_name
             store_complex_dict(config, database_path="../results.db", table_name="trials")
         except Exception as e:
             print(f"Error in trial with configs: {trainer_cfg}, {model_cfg}. Error: {e}", flush=True, file=sys.stderr)
@@ -244,7 +236,7 @@ def main(data_id: int = 0, model_id: int = 0, trial_count: int = 2):
     df = pd.read_sql_query("SELECT * FROM trials WHERE search_id = ?", conn, params=[str(search_id)])
     min_rmse = df["rmse"].min()
     max_rmse = df["rmse"].max()
-    df["score"] = df["f1_macro"] + df["f1_micro"] + df["acc"] - 3 * (df["rmse"] - min_rmse) / (max_rmse - min_rmse)  
+    df["score"] = df["f1_macro"] + df["acc"] - 2 * ((df["rmse"] - min_rmse) / (max_rmse - min_rmse))  
     best_row = df.loc[df["score"].idxmax()]
     print("Best Config: ", best_row)
 
@@ -277,6 +269,8 @@ def main(data_id: int = 0, model_id: int = 0, trial_count: int = 2):
 
         results = deepcopy(best_config)
         results["seed"] = seed
+        results["dataset"] = ds_name
+        results["model"] = model_name
         for split, r in[("valid", valid_results), ("test", test_results), ("train", train_results)]:
             for metric_name, metric_value in r.items():
                 results[f"{split}_{metric_name}"] = metric_value
