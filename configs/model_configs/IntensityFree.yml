@@ -1,14 +1,14 @@
 hidden_size: [8, 16, 32, 64] 
-loss_integral_num_sample_per_step: [5, 10, 20, 50]
+loss_integral_num_sample_per_step: 5
 mean_log_inter_time: (-1.0, 1.0)
 std_log_inter_time: (0.0, 2.0)
 thinning:
-  num_seq: 10 
+  num_seq: 4 
   num_sample: 1
-  num_exp: 500 # number of i.i.d. Exp(intensity_bound) draws at one time in thinning algorithm
-  look_ahead_time: 10
+  num_exp: 4 # number of i.i.d. Exp(intensity_bound) draws at one time in thinning algorithm
+  look_ahead_time: 4
   patience_counter: 5 # the maximum iteration used in adaptive thinning
-  over_sample_rate: 5
+  over_sample_rate: 4
   num_samples_boundary: 5
-  dtime_max: 5
+  dtime_max: 4
   num_step_gen: 1

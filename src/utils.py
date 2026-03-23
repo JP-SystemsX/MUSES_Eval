@@ -8,6 +8,8 @@ import yaml
 from time import sleep
 import sqlite3
 from ast import literal_eval
+import torch
+import random
 
 def string_to_dict(s):
     if isinstance(s, str) and s.startswith("{") and s.endswith("}"):
@@ -189,3 +191,7 @@ def to_builtin(x):
     return x
 
 
+def set_seed(seed: int):
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    random.seed(seed)

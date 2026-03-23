@@ -18,13 +18,15 @@ from easy_tpp.utils.const import PredOutputIndex
 from easy_tpp.utils.metrics import MetricsHelper
 from easy_tpp.config_factory.model_config import ModelConfig
 from sklearn.metrics import f1_score
-from utils import to_builtin, store_complex_dict, string_to_dict
+from utils import to_builtin, store_complex_dict, string_to_dict, set_seed
 import uuid
 import sqlite3
 import pandas as pd
-import torch
 from tqdm.auto import tqdm
 from time import time
+from datasets import load_dataset
+import gc
+import torch
 
 os.chdir(Path(__file__).parent)
 
@@ -45,7 +47,6 @@ def _build_input_from_json(self, source_dir, split):
     Returns:
         dict: Dictionary with processed event sequences.
     """
-    from datasets import load_dataset
     split_mapped = 'validation' if split == 'dev' else split
     if source_dir.endswith('.json'):
         data = load_dataset('json', data_files={split_mapped: source_dir}, split=split_mapped)
@@ -134,6 +135,7 @@ app = Typer(pretty_exceptions_enable=False)
 @app.command()
 def main(data_id: int = 0, model_id: int = 0, trial_count: int = 2):
     search_id = uuid.uuid4()
+    set_seed(42)
 
     ds_names = sorted(ds.get_dataset_config_names("ddrg/NEDTBench"))
     ds_name = ds_names[data_id]
@@ -145,6 +147,15 @@ def main(data_id: int = 0, model_id: int = 0, trial_count: int = 2):
     model_configs = sorted(model_configs, key=lambda x: x.stem)
     model_config_file = model_configs[model_id]
     model_name = model_config_file.stem
+
+    # Skip if already done
+    done_file = Path("../tmp/done.txt")
+    if done_file.exists():
+        with open(done_file, "r", encoding="utf-8") as f:
+            done_lines = f.read().splitlines()
+            if f"{model_name}|{ds_name}" in done_lines:
+                print(f"Skipping {model_name} on {ds_name} as it's already done.")
+                return
 
     # save config to yaml
     config_address = Path(f'../tmp/{model_name}-{ds_name}-{search_id}.yaml')
@@ -181,6 +192,11 @@ def main(data_id: int = 0, model_id: int = 0, trial_count: int = 2):
 
     for trainer_cfg, model_cfg in tqdm(zip(list(cs_trainer.sample_configuration(size=trial_count)), list(cs_model.sample_configuration(size=trial_count))), total=trial_count):
         print("Trial with configs: ", trainer_cfg, model_cfg)
+
+        gc.collect()
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+
         config = deepcopy(config_)
         trainer_cfg = dict(trainer_cfg)
         trainer_cfg = {k: to_builtin(v) for k, v in trainer_cfg.items()}
@@ -205,7 +221,7 @@ def main(data_id: int = 0, model_id: int = 0, trial_count: int = 2):
 
         runner_config = Config.build_from_yaml_file(str(config_address), experiment_id="train")
 
-        if True:
+        try:
             start_time = time()
             model_runner = Runner.build_from_config(runner_config)
 
@@ -219,7 +235,7 @@ def main(data_id: int = 0, model_id: int = 0, trial_count: int = 2):
             config["timestamp"] = datetime.datetime.now().isoformat()
             config["dataset"] = ds_name
             store_complex_dict(config, database_path="../results.db", table_name="trials")
-        else:
+        except Exception as e:
             print(f"Error in trial with configs: {trainer_cfg}, {model_cfg}. Error: {e}", flush=True, file=sys.stderr)
             continue
 
@@ -243,8 +259,7 @@ def main(data_id: int = 0, model_id: int = 0, trial_count: int = 2):
 
     for seed in range(5): 
         print(f"Retraining with best config, seed {seed}...")
-        torch.manual_seed(seed)
-        np.random.seed(seed)
+        set_seed(seed)
 
         # Also adjust seed of the trainer
         best_config["train"]["trainer_config"]["seed"] = seed
@@ -267,6 +282,10 @@ def main(data_id: int = 0, model_id: int = 0, trial_count: int = 2):
                 results[f"{split}_{metric_name}"] = metric_value
 
         store_complex_dict(results, database_path="../results.db", table_name="final_results")
+    
+    # Mark as finished
+    with open(done_file, "a", encoding="utf-8") as f:
+        f.write(f"{model_name}|{ds_name}\n")
 
 
 
