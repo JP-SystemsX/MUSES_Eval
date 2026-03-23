@@ -183,3 +183,4 @@ cython_debug/
 /tmp
 results.db
 *.pkl
+/hpc/logs

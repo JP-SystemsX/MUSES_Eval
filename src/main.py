@@ -1,3 +1,5 @@
+import datetime
+import sys
 from typer import Typer
 from easy_tpp.preprocess import TPPDataLoader
 from easy_tpp.runner.base_runner import Runner, logger
@@ -14,13 +16,15 @@ import numpy as np
 from copy import deepcopy
 from easy_tpp.utils.const import PredOutputIndex
 from easy_tpp.utils.metrics import MetricsHelper
+from easy_tpp.config_factory.model_config import ModelConfig
 from sklearn.metrics import f1_score
 from utils import to_builtin, store_complex_dict, string_to_dict
 import uuid
 import sqlite3
 import pandas as pd
 import torch
-
+from tqdm.auto import tqdm
+from time import time
 
 os.chdir(Path(__file__).parent)
 
@@ -116,6 +120,14 @@ def f1_micro_metric_function(predictions, labels, **kwargs):
     return f1_score(label, pred, average='micro')
 
 
+def get_item_override(self, key):
+    """Some models access config via get_item instead of attribute access. This workaround allows both."""
+    if key == "dropout":
+        return self.dropout_rate # dropout is under different names in different models
+    return getattr(self, key)
+ModelConfig.__getitem__ = get_item_override
+
+
 
 app = Typer(pretty_exceptions_enable=False)
 
@@ -167,7 +179,7 @@ def main(data_id: int = 0, model_id: int = 0, trial_count: int = 2):
     cs_trainer = ConfigurationSpace(trainer_search_space)
     cs_model = ConfigurationSpace(model_search_space)
 
-    for trainer_cfg, model_cfg in zip(list(cs_trainer.sample_configuration(size=trial_count)), list(cs_model.sample_configuration(size=trial_count))):
+    for trainer_cfg, model_cfg in tqdm(zip(list(cs_trainer.sample_configuration(size=trial_count)), list(cs_model.sample_configuration(size=trial_count))), total=trial_count):
         print("Trial with configs: ", trainer_cfg, model_cfg)
         config = deepcopy(config_)
         trainer_cfg = dict(trainer_cfg)
@@ -193,16 +205,23 @@ def main(data_id: int = 0, model_id: int = 0, trial_count: int = 2):
 
         runner_config = Config.build_from_yaml_file(str(config_address), experiment_id="train")
 
-        model_runner = Runner.build_from_config(runner_config)
+        if True:
+            start_time = time()
+            model_runner = Runner.build_from_config(runner_config)
 
-        model_runner.run()
-        results = model_runner.evaluate(return_all_metrics=True)
+            model_runner.run()
+            results = model_runner.evaluate(return_all_metrics=True)
 
-        # Log results to DB
-        config["search_id"] = str(search_id)
-        config.update(results)
-        store_complex_dict(config, database_path="../results.db", table_name="trials")
-        print("Hello EasyTPP!")
+            # Log results to DB
+            config["search_id"] = str(search_id)
+            config.update(results)
+            config["trial_time"] = time() - start_time
+            config["timestamp"] = datetime.datetime.now().isoformat()
+            config["dataset"] = ds_name
+            store_complex_dict(config, database_path="../results.db", table_name="trials")
+        else:
+            print(f"Error in trial with configs: {trainer_cfg}, {model_cfg}. Error: {e}", flush=True, file=sys.stderr)
+            continue
 
     # Get best config from db
     conn = sqlite3.connect("../results.db")
@@ -249,13 +268,6 @@ def main(data_id: int = 0, model_id: int = 0, trial_count: int = 2):
 
         store_complex_dict(results, database_path="../results.db", table_name="final_results")
 
-    # TODO Load MetaData
-    # TODO Load Data
-    # TODO Load Model
-    # TODO Optimize Model
-    # TODO Evaluate Model
-    # TODO Save Predictions
-    pass
 
 
 if __name__ == "__main__":
