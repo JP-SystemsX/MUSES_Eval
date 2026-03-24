@@ -16,7 +16,9 @@ import numpy as np
 from copy import deepcopy
 from easy_tpp.utils.const import PredOutputIndex
 from easy_tpp.utils.metrics import MetricsHelper
+from easy_tpp.utils import RunnerPhase
 from easy_tpp.config_factory.model_config import ModelConfig
+from easy_tpp.torch_wrapper import TorchModelWrapper
 from sklearn.metrics import f1_score
 from utils import to_builtin, store_complex_dict, string_to_dict, set_seed
 import uuid
@@ -90,8 +92,63 @@ def evaluate(self, valid_loader=None, return_all_metrics=False, **kwargs):
     return metric['rmse']  # return a list of scalr for HPO to use
 
 
+def run_batch(self, batch, phase):
+    """Run one batch.
+
+    Args:
+        batch (EasyTPP.BatchEncoding): preprocessed batch data that go into the model.
+        phase (RunnerPhase): a const that defines the stage of model runner.
+
+    Returns:
+        tuple: for training and validation we return loss, prediction and labels;
+        for prediction we return prediction.
+    """
+
+    batch = batch.to(self.device).values()
+    if phase in (RunnerPhase.TRAIN, RunnerPhase.VALIDATE):
+        # set mode to train
+        is_training = (phase == RunnerPhase.TRAIN)
+        self.model.train(is_training)
+
+        # FullyRNN needs grad event in validation stage
+        grad_flag = is_training if not self.model_id == 'FullyNN' else True
+        # run model
+        with torch.set_grad_enabled(grad_flag):
+            loss, num_event = self.model.loglike_loss(batch)
+
+        # Assume we dont do prediction on train set
+        pred_dtime, pred_type, label_dtime, label_type, mask = None, None, None, None, None
+
+        # update grad
+        if is_training:
+            if num_event > 0: # ! Sometimes num_event can be 0 due to padding, we should skip those batches to division by zero
+                self.opt.zero_grad()
+                (loss / num_event).backward()
+                self.opt.step()
+        else:  # by default we do not do evaluation on train set which may take a long time
+            if self.model.event_sampler:
+                self.model.eval()
+                with torch.no_grad():
+                    if batch[1] is not None and batch[2] is not None:
+                        label_dtime, label_type = batch[1][:, 1:].cpu().numpy(), batch[2][:, 1:].cpu().numpy()
+                    if batch[3] is not None:
+                        mask = batch[3][:, 1:].cpu().numpy()
+                    pred_dtime, pred_type = self.model.predict_one_step_at_every_event(batch=batch)
+                    pred_dtime = pred_dtime.detach().cpu().numpy()
+                    pred_type = pred_type.detach().cpu().numpy()
+        return loss.item(), num_event, (pred_dtime, pred_type), (label_dtime, label_type), (mask,)
+    else:
+        pred_dtime, pred_type, label_dtime, label_type = self.model.predict_multi_step_since_last_event(batch=batch)
+        pred_dtime = pred_dtime.detach().cpu().numpy()
+        pred_type = pred_type.detach().cpu().numpy()
+        label_dtime = label_dtime.detach().cpu().numpy()
+        label_type = label_type.detach().cpu().numpy()
+        return (pred_dtime, pred_type), (label_dtime, label_type)
+
+
 # Monkey Patch
 TPPDataLoader._build_input_from_json = _build_input_from_json
+TorchModelWrapper.run_batch = run_batch
 Runner.evaluate = evaluate
 
 @MetricsHelper.register(name='f1_macro', direction=MetricsHelper.MAXIMIZE, overwrite=False)
@@ -187,6 +244,7 @@ def main(data_id: int = 0, model_id: int = 1, trial_count: int = 2):
     else:
         model_specs_search_space = {}
     cs_trainer = ConfigurationSpace(trainer_search_space)
+    cs_trainer["learning_rate"].log = True
     cs_model = ConfigurationSpace(model_search_space)
     cs_model_specs = ConfigurationSpace(model_specs_search_space)
 
