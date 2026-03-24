@@ -285,6 +285,7 @@ def main(data_id: int = 0, model_id: int = 1, trial_count: int = 2):
             "trainer_config": trainer_cfg,
             "model_config": model_cfg,
         }
+        print("Config for this trial: ", config)
         # save config to yaml
         with open(config_address, 'w') as f:
             yaml.safe_dump(config, f)
@@ -315,7 +316,8 @@ def main(data_id: int = 0, model_id: int = 1, trial_count: int = 2):
     df = pd.read_sql_query("SELECT * FROM trials WHERE search_id = ?", conn, params=[str(search_id)])
     min_rmse = df["rmse"].min()
     max_rmse = df["rmse"].max()
-    df["score"] = df["f1_macro"] + df["acc"] - 2 * ((df["rmse"] - min_rmse) / (max_rmse - min_rmse))  
+    rmse_span = max_rmse - min_rmse
+    df["score"] = df["f1_macro"] + df["acc"] - 2 * ((df["rmse"] - min_rmse) / (rmse_span if rmse_span > 0 else 1))
     best_row = df.loc[df["score"].idxmax()]
     print("Best Config: ", best_row)
 
