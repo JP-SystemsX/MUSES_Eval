@@ -184,4 +184,6 @@ cython_debug/
 results.db
 *.pkl
 /hpc/logs
+*.err
+*.out
 *.db
