@@ -158,11 +158,19 @@ def main(data_id: int = 0, model_id: int = 0, trial_count: int = 2):
                 "data_specs": {
                     "num_event_types": class_count,
                     "pad_token_id": class_count,
-                    "padding_side": "left" 
+                    "padding_side": "left", 
                 }
             }
         },
     }
+
+    # Load Dataset to get more detailed meta data
+    dataset = load_dataset("ddrg/NEDTBench", ds_name, split="train")
+    # Cap maxlength to 1000 (to avoid OOM)
+    if max(dataset["seq_len"]) > 1000:
+        config_["data"]["data_specs"]["max_length"] = 1000
+        config_["data"]["data_specs"]["padding_strategy"] = "max_length"
+        config_["data"]["data_specs"]["truncation_strategy"] = "longest_first"
 
 
     # Simple Random Search
