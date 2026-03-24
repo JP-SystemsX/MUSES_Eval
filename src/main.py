@@ -120,7 +120,7 @@ ModelConfig.__getitem__ = get_item_override
 app = Typer(pretty_exceptions_enable=False)
 
 @app.command()
-def main(data_id: int = 0, model_id: int = 0, trial_count: int = 2):
+def main(data_id: int = 0, model_id: int = 1, trial_count: int = 2):
     search_id = uuid.uuid4()
     set_seed(42)
 
@@ -182,15 +182,20 @@ def main(data_id: int = 0, model_id: int = 0, trial_count: int = 2):
             if isinstance(search_space[key], str) and search_space[key].startswith("(") and search_space[key].endswith(")"):
                 search_space[key] = literal_eval(search_space[key])
 
+    if "model_specs" in model_search_space:
+        model_specs_search_space = model_search_space.pop("model_specs")
+    else:
+        model_specs_search_space = {}
     cs_trainer = ConfigurationSpace(trainer_search_space)
     cs_model = ConfigurationSpace(model_search_space)
+    cs_model_specs = ConfigurationSpace(model_specs_search_space)
 
     if len(dataset) > 100_000:  # Avoid Large Evaluations by capping epoch count to 10 for large datasets
         # if more than 500k TS, cap to 5 epochs else cap to 10 epochs
         cs_trainer.add(ForbiddenInClause(cs_trainer['max_epoch'], [i for i in cs_trainer['max_epoch'].choices if i > (5 if len(dataset) > 500_000 else 10)]))
 
     search_start_time = time()
-    for trainer_cfg, model_cfg in tqdm(zip(list(cs_trainer.sample_configuration(size=trial_count)), list(cs_model.sample_configuration(size=trial_count))), total=trial_count):
+    for trainer_cfg, model_cfg, model_specs_cfg in tqdm(zip(list(cs_trainer.sample_configuration(size=trial_count)), list(cs_model.sample_configuration(size=trial_count)), list(cs_model_specs.sample_configuration(size=trial_count))), total=trial_count):
         print("Trial with configs: ", trainer_cfg, model_cfg)
         if time() - search_start_time > 48 * 60 * 60:  # Stop search after 48 hours
             print("Stopping search after 48 hours.")
@@ -206,6 +211,9 @@ def main(data_id: int = 0, model_id: int = 0, trial_count: int = 2):
         trainer_cfg = {k: to_builtin(v) for k, v in trainer_cfg.items()}
         model_cfg = dict(model_cfg)
         model_cfg = {k: to_builtin(v) for k, v in model_cfg.items()}
+        model_specs_cfg = dict(model_specs_cfg)
+        model_specs_cfg = {k: to_builtin(v) for k, v in model_specs_cfg.items()}
+        model_cfg["model_specs"] = model_specs_cfg
         trainer_cfg["metrics"] = ['acc', 'rmse', 'f1_macro'] 
         config["train"] = {
             "base_config": {
