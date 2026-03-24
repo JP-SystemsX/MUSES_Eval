@@ -10,7 +10,7 @@ from easy_tpp.config_factory import Config
 from easy_tpp.runner import Runner
 import yaml 
 from pathlib import Path
-from ConfigSpace import ConfigurationSpace
+from ConfigSpace import ConfigurationSpace, ForbiddenInClause
 from ast import literal_eval
 import numpy as np
 from copy import deepcopy
@@ -184,6 +184,10 @@ def main(data_id: int = 0, model_id: int = 0, trial_count: int = 2):
 
     cs_trainer = ConfigurationSpace(trainer_search_space)
     cs_model = ConfigurationSpace(model_search_space)
+
+    if len(dataset) > 100_000:  # Avoid Large Evaluations by capping epoch count to 10 for large datasets
+        # if more than 500k TS, cap to 5 epochs else cap to 10 epochs
+        cs_trainer.add(ForbiddenInClause(cs_trainer['max_epoch'], [i for i in cs_trainer['max_epoch'].choices if i > (5 if len(dataset) > 500_000 else 10)]))
 
     search_start_time = time()
     for trainer_cfg, model_cfg in tqdm(zip(list(cs_trainer.sample_configuration(size=trial_count)), list(cs_model.sample_configuration(size=trial_count))), total=trial_count):
