@@ -15,4 +15,4 @@ DATA_ID=$(( SLURM_ARRAY_TASK_ID / 8 ))           # number between 0–35
 MODEL_ID=$(( SLURM_ARRAY_TASK_ID % 8 ))    # index into file list
 
 source ./hpc/modules.sh
-srun python3 ./src/main.py --data-id $DATA_ID --model-id $MODEL_ID --trial-count 100
+srun python3 ./src/main.py --data-id $DATA_ID --model-id $MODEL_ID --trial-count 150

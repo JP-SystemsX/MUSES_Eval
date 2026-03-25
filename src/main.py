@@ -215,7 +215,7 @@ def main(data_id: int = 0, model_id: int = 1, trial_count: int = 2):
                 "data_specs": {
                     "num_event_types": class_count,
                     "pad_token_id": class_count,
-                    "padding_side": "left", 
+                    "padding_side": "right", 
                 }
             }
         },
