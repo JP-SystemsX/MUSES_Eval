@@ -1,5 +1,3 @@
-import datetime
-import sys
 from typer import Typer
 from easy_tpp.preprocess import TPPDataLoader
 from easy_tpp.runner.base_runner import Runner, logger
@@ -10,7 +8,7 @@ from easy_tpp.config_factory import Config
 from easy_tpp.runner import Runner
 import yaml 
 from pathlib import Path
-from ConfigSpace import ConfigurationSpace, ForbiddenInClause
+from ConfigSpace import ConfigurationSpace
 from ast import literal_eval
 import numpy as np
 from copy import deepcopy
@@ -19,26 +17,26 @@ from easy_tpp.utils.metrics import MetricsHelper
 from easy_tpp.utils import RunnerPhase
 from easy_tpp.config_factory.model_config import ModelConfig
 from easy_tpp.torch_wrapper import TorchModelWrapper
-from sklearn.metrics import f1_score
-from utils import to_builtin, store_complex_dict, string_to_dict, set_seed
+from sklearn.metrics import f1_score, r2_score
+from utils import store_complex_dict, string_to_dict, set_seed, trial
 import uuid
 import sqlite3
 import pandas as pd
 from tqdm.auto import tqdm
 from time import time
 from datasets import load_dataset
-import gc
 import torch
+from dehb import DEHB
+from functools import partial
 
 os.chdir(Path(__file__).parent)
 
-os.environ["HF_TOKEN"] = "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" #TODO Remove
 
 # ============================================================= #
 # Add support for additional datasources and metrics to EasyTPP #
 # ============================================================= #
 
-# Overwrite EasyTPP data loader to also support unofficial datasets
+# Overwrite EasyTPP data loader to also support unofficial datasets + allow subsampling for large datasets to speed up HPO
 def _build_input_from_json(self, source_dir, split):
     """Load and process data from a JSON file.
 
@@ -57,6 +55,11 @@ def _build_input_from_json(self, source_dir, split):
     elif source_dir.count('/') == 2:
         source_dir, ds_name = source_dir.rsplit('/', 1)
         data = load_dataset(source_dir, ds_name, split=split_mapped)
+    elif source_dir.count('/') == 3: # Load and Cap Hugging Face dataset for HPO to speed it up, format should be "ddrg/MUSES/ds_name/ds_length_cap"
+        source_dir, ds_name, ds_length_cap = source_dir.rsplit('/', 2)
+        data = load_dataset(source_dir, ds_name, split=split_mapped)
+        if split_mapped == 'train' and len(data) > int(ds_length_cap):  # Cap training set to specified number of samples for HPO to speed it up
+            data = data.shuffle(seed=42).select(range(int(ds_length_cap)))
     else:
         raise ValueError("Unsupported source directory format for JSON.")
 
@@ -173,13 +176,30 @@ def get_item_override(self, key):
 ModelConfig.__getitem__ = get_item_override
 
 
+@MetricsHelper.register(name='r2', direction=MetricsHelper.MAXIMIZE, overwrite=False)
+def r2_metric_function(predictions, labels, **kwargs):
+    """Compute R2 metrics of the time predictions."""
+    seq_mask = kwargs.get('seq_mask')
+    if seq_mask is None or len(seq_mask) == 0:
+        # If mask is empty or None, use all predictions
+        pred = predictions[PredOutputIndex.TimePredIndex]
+        label = labels[PredOutputIndex.TimePredIndex]
+    else:
+        pred = predictions[PredOutputIndex.TimePredIndex][seq_mask]
+        label = labels[PredOutputIndex.TimePredIndex][seq_mask]
+
+    pred = np.reshape(pred, [-1])
+    label = np.reshape(label, [-1])
+    return r2_score(label, pred)
+
+
 
 app = Typer(pretty_exceptions_enable=False)
 
 @app.command()
-def main(data_id: int = 0, model_id: int = 1, trial_count: int = 2):
+def main(data_id: int = 2, model_id: int = 2, trial_count: int = 2, seed: int = 42):
     search_id = uuid.uuid4()
-    set_seed(42)
+    set_seed(seed)
 
     ds_names = sorted(ds.get_dataset_config_names("ddrg/MUSES"))
     ds_name = ds_names[data_id]
@@ -202,7 +222,7 @@ def main(data_id: int = 0, model_id: int = 1, trial_count: int = 2):
                 return
 
     # save config to yaml
-    config_address = Path(f'../tmp/{model_name}-{ds_name}-{search_id}.yaml')
+    config_address = Path(f'../tmp/{model_name}-{ds_name}-{search_id}-best.yaml')
     config_address.parent.mkdir(exist_ok=True, parents=True)
     config_ = {
         "pipeline_config_id": "runner_config",
@@ -243,77 +263,49 @@ def main(data_id: int = 0, model_id: int = 1, trial_count: int = 2):
         model_specs_search_space = model_search_space.pop("model_specs")
     else:
         model_specs_search_space = {}
-    cs_trainer = ConfigurationSpace(trainer_search_space)
-    cs_trainer["learning_rate"].log = True
-    cs_model = ConfigurationSpace(model_search_space)
-    cs_model_specs = ConfigurationSpace(model_specs_search_space)
 
-    if len(dataset) > 100_000:  # Avoid Large Evaluations by capping epoch count to 10 for large datasets
-        # if more than 500k TS, cap to 5 epochs else cap to 10 epochs
-        cs_trainer.add(ForbiddenInClause(cs_trainer['max_epoch'], [i for i in cs_trainer['max_epoch'].choices if i > (5 if len(dataset) > 500_000 else 10)]))
+    # Combine three search spaces to flatten them (Easy TPP configs are nested ConfigSpace works best with flat search spaces)
+    trainer_search_space = {f"train.{key}": value for key, value in trainer_search_space.items()}
+    model_search_space = {f"model.{key}": value for key, value in model_search_space.items()}
+    model_specs_search_space = {f"model_specs.{key}": value for key, value in model_specs_search_space.items()}
+    search_space = {**trainer_search_space, **model_search_space, **model_specs_search_space}
+    cs = ConfigurationSpace(search_space)
+    cs["train.learning_rate"].log = True
 
 
     # ============= #
     # Random Search #
     # ============= #
     search_start_time = time()
-    for trainer_cfg, model_cfg, model_specs_cfg in tqdm(zip(list(cs_trainer.sample_configuration(size=trial_count)), list(cs_model.sample_configuration(size=trial_count)), list(cs_model_specs.sample_configuration(size=trial_count))), total=trial_count):
-        print("Trial with configs: ", trainer_cfg, model_cfg)
-        if time() - search_start_time > 48 * 60 * 60:  # Stop search after 48 hours
-            print("Stopping search after 48 hours.")
-            break
 
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            torch.cuda.ipc_collect()
+    dim = len(list(cs.values()))
+    optimizer = DEHB(
+        cs=cs,
+        f=partial(
+            trial,
+            model_name=model_name,
+            ds_name=ds_name,
+            search_id=search_id,
+            config_=config_,
+            seed=seed
+        ),
+        dimensions=dim,
+        min_fidelity=3,  # Low Fidelity
+        max_fidelity=27, # High Fidelity
+        eta=3,  
+        n_workers=1, # TODO
+        output_path=f"../hpc/dehb_logs/{model_name}_{ds_name}.log",
+        seed=seed,
+    )
 
-        config = deepcopy(config_)
-        trainer_cfg = dict(trainer_cfg)
-        trainer_cfg = {k: to_builtin(v) for k, v in trainer_cfg.items()}
-        model_cfg = dict(model_cfg)
-        model_cfg = {k: to_builtin(v) for k, v in model_cfg.items()}
-        model_specs_cfg = dict(model_specs_cfg)
-        model_specs_cfg = {k: to_builtin(v) for k, v in model_specs_cfg.items()}
-        model_cfg["model_specs"] = model_specs_cfg
-        trainer_cfg["metrics"] = ['acc', 'rmse', 'f1_macro'] 
-        config["train"] = {
-            "base_config": {
-                "stage": "train",
-                "backend": "torch",
-                "dataset_id": ds_name, 
-                "runner_id": "std_tpp",
-                "model_id": model_name, 
-                "base_dir": "../checkpoints/",
-            },
-            "trainer_config": trainer_cfg,
-            "model_config": model_cfg,
-        }
-        print("Config for this trial: ", config)
-        # save config to yaml
-        with open(config_address, 'w') as f:
-            yaml.safe_dump(config, f)
+    # Run optimization for 1 bracket. Output files will be saved to ./logs
+    traj, runtime, history = optimizer.run(fevals=trial_count, total_cost=48 * 60 * 60)  # Stop after 48 hours or specified number of evaluations
+    # Get all trials
+    history = pd.DataFrame(history, columns=["config_id", "config", "fitness","cost", "fidelity", "info"])
 
-        runner_config = Config.build_from_yaml_file(str(config_address), experiment_id="train")
+    search_duration = time() - search_start_time
+    print(f"Search finished in {search_duration/3600:.2f} hours. Best Config: {traj[-1]}")
 
-        try:
-            start_time = time()
-            model_runner = Runner.build_from_config(runner_config)
-
-            model_runner.run()
-            results = model_runner.evaluate(return_all_metrics=True)
-
-            # Log results to DB
-            config["search_id"] = str(search_id)
-            config.update(results)
-            config["trial_time"] = time() - start_time
-            config["timestamp"] = datetime.datetime.now().isoformat()
-            config["dataset"] = ds_name
-            config["model"] = model_name
-            store_complex_dict(config, database_path="../results.db", table_name="trials")
-        except Exception as e:
-            print(f"Error in trial with configs: {trainer_cfg}, {model_cfg}. Error: {e}", flush=True, file=sys.stderr)
-            continue
 
     # Get best config from db
     conn = sqlite3.connect("../results.db")
@@ -332,6 +324,18 @@ def main(data_id: int = 0, model_id: int = 1, trial_count: int = 2):
         "train": string_to_dict(best_row["train"]),
     }
     # best_config["train"]["trainer_config"]["metrics"] = []
+    # Upgrade Thinning for Eval
+    best_config["train"]["model_config"]["thinning"] = {
+        "num_seq": 10,
+        "num_sample": 1,
+        "num_exp": 500, # number of i.i.d. Exp(intensity_bound) draws at one time in thinning algorithm
+        "look_ahead_time": 10,
+        "patience_counter": 5, # the maximum iteration used in adaptive thinning
+        "over_sample_rate": 5,
+        "num_samples_boundary": 5,
+        "dtime_max": 5
+        }
+    
 
 
     for seed in range(5): 
@@ -356,6 +360,8 @@ def main(data_id: int = 0, model_id: int = 1, trial_count: int = 2):
         results["seed"] = seed
         results["dataset"] = ds_name
         results["model"] = model_name
+        results["search_id"] = str(search_id)
+        results["search_duration"] = search_duration
         for split, r in[("valid", valid_results), ("test", test_results), ("train", train_results)]:
             for metric_name, metric_value in r.items():
                 results[f"{split}_{metric_name}"] = metric_value

@@ -5,3 +5,4 @@ matplotlib
 datasets
 ConfigSpace
 scikit-learn
+dehb

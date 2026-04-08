@@ -1,3 +1,4 @@
+from copy import deepcopy
 import datetime
 import json
 import numpy as np
@@ -10,6 +11,11 @@ import sqlite3
 from ast import literal_eval
 import torch
 import random
+import pandas as pd
+from easy_tpp.config_factory import Config
+from easy_tpp.runner import Runner
+from time import time
+import gc
 
 def string_to_dict(s):
     if isinstance(s, str) and s.startswith("{") and s.endswith("}"):
@@ -195,3 +201,103 @@ def set_seed(seed: int):
     np.random.seed(seed)
     torch.manual_seed(seed)
     random.seed(seed)
+
+
+
+def trial(
+        hyperparameters: dict, 
+        fidelity: int,
+        seed: int,
+        model_name: str,
+        ds_name: str,
+        search_id: str,
+        config_: dict,
+        ):
+    config = deepcopy(config_)
+
+    hp = dict(hyperparameters)
+    thinning_conf = {
+        "num_seq": 3,
+        "num_sample": 1,
+        "num_exp": 4, 
+        "look_ahead_time": 4,
+        "patience_counter": 5,
+        "over_sample_rate": 5,
+        "num_samples_boundary": 5,
+        "dtime_max": 5
+    }
+
+    # Define Fidelity Levels
+    fidelity = int(fidelity)
+    match fidelity:
+        case 3: # Low Fidelity 
+            max_seq_cnt = 50_000
+
+        case 9: # Medium Fidelity
+            max_seq_cnt = 250_000
+            thinning_conf["num_seq"] = 5
+            thinning_conf["num_exp"] = 50
+            thinning_conf["look_ahead_time"] = 6
+
+        case 27: # High Fidelity
+            max_seq_cnt = 1_000_000
+            thinning_conf["num_seq"] = 10
+            thinning_conf["num_exp"] = 500
+            thinning_conf["look_ahead_time"] = 10
+
+    # Format Config
+    hp = {k: to_builtin(v) for k, v in hp.items()}
+    model_specs = {key.rsplit("model_specs.")[-1]: value for key, value in hp.items() if key.startswith("model_specs.")}
+    model_cfg = {key.rsplit("model.")[-1]: value for key, value in hp.items() if key.startswith("model.")}
+    model_cfg["model_specs"] = model_specs
+    trainer_cfg = {key.rsplit("train.")[-1]: value for key, value in hp.items() if key.startswith("train..")}
+    trainer_cfg["metrics"] = ['acc', 'rmse', 'f1_macro', "r2"] 
+    config["train"] = {
+            "base_config": {
+                "stage": "train",
+                "backend": "torch",
+                "dataset_id": ds_name, 
+                "runner_id": "std_tpp",
+                "model_id": model_name, 
+                "base_dir": "../checkpoints/",
+            },
+            "trainer_config": trainer_cfg,
+            "model_config": model_cfg,
+        }
+    config["data"][ds_name]["train_dir"] = f"ddrg/MUSES/{ds_name}/{max_seq_cnt}" # Limit Train Set Size based on Fidelity Level
+    print("Config for this trial: ", config)
+
+    config_address = Path(f'../tmp/{model_name}-{ds_name}-{search_id}.yaml') # TODO change for parallel 
+    with open(config_address, 'w') as f:
+            yaml.safe_dump(config, f)
+
+
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+
+    runner_config = Config.build_from_yaml_file(str(config_address), experiment_id="train")
+
+
+    start_time = time()
+    model_runner = Runner.build_from_config(runner_config)
+
+    model_runner.run()
+    eval_results = model_runner.evaluate(return_all_metrics=True)
+
+    # Log results to DB
+    config["search_id"] = str(search_id)
+    config.update(eval_results)
+    config["trial_time"] = time() - start_time
+    config["timestamp"] = datetime.datetime.now().isoformat()
+    config["dataset"] = ds_name
+    config["model"] = model_name
+    store_complex_dict(config, database_path="../results.db", table_name="trials")
+
+    results = {
+        "fitness": -1 * eval_results["acc"] - eval_results["f1_macro"] - 2 * max(0, eval_results["r2"]), 
+        "cost": config["trial_time"],
+        "info": None
+    }
+    return results

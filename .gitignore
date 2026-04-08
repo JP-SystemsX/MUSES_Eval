@@ -187,3 +187,4 @@ results.db
 *.err
 *.out
 *.db
+/hpc/dehb_logs
