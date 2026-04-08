@@ -8,7 +8,7 @@
 #SBATCH --job-name=DUESE
 #SBATCH --output=hpc/logs/DUESE-%j-%a.out  # Output Address 
 #SBATCH --error=hpc/logs/DUESE-%j-%a.err  # Output Address
-#SBATCH --array=0-128%16
+#SBATCH --array=0-152%19
 
 # Derive parameters
 DATA_ID=$(( SLURM_ARRAY_TASK_ID / 8 ))           # number between 0–35

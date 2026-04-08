@@ -181,10 +181,10 @@ def main(data_id: int = 0, model_id: int = 1, trial_count: int = 2):
     search_id = uuid.uuid4()
     set_seed(42)
 
-    ds_names = sorted(ds.get_dataset_config_names("ddrg/NEDTBench"))
+    ds_names = sorted(ds.get_dataset_config_names("ddrg/MUSES"))
     ds_name = ds_names[data_id]
 
-    meta_data = ds.load_dataset_builder("ddrg/NEDTBench", ds_name)
+    meta_data = ds.load_dataset_builder("ddrg/MUSES", ds_name)
     class_count = len(meta_data.info.features["type_event"].feature.names)
 
     model_configs = Path("../configs/model_configs/").glob("*.yml")
@@ -209,9 +209,9 @@ def main(data_id: int = 0, model_id: int = 1, trial_count: int = 2):
         "data":   {
             ds_name: {
                 "data_format": "json",
-                "train_dir": f"ddrg/NEDTBench/{ds_name}",
-                "valid_dir": f"ddrg/NEDTBench/{ds_name}",
-                "test_dir": f"ddrg/NEDTBench/{ds_name}",
+                "train_dir": f"ddrg/MUSES/{ds_name}",
+                "valid_dir": f"ddrg/MUSES/{ds_name}",
+                "test_dir": f"ddrg/MUSES/{ds_name}",
                 "data_specs": {
                     "num_event_types": class_count,
                     "pad_token_id": class_count,
@@ -222,7 +222,7 @@ def main(data_id: int = 0, model_id: int = 1, trial_count: int = 2):
     }
 
     # Load Dataset to get more detailed meta data
-    dataset = load_dataset("ddrg/NEDTBench", ds_name, split="train")
+    dataset = load_dataset("ddrg/MUSES", ds_name, split="train")
     # Cap maxlength to 1000 (to avoid OOM)
     if max(dataset["seq_len"]) > 1000:
         config_["data"][ds_name]["data_specs"]["max_len"] = 1000
