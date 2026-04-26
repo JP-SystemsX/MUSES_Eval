@@ -1,6 +1,8 @@
 from copy import deepcopy
 import datetime
 import json
+from math import inf
+import sys
 import numpy as np
 from pathlib import Path
 import hashlib
@@ -16,6 +18,7 @@ from easy_tpp.config_factory import Config
 from easy_tpp.runner import Runner
 from time import time
 import gc
+from constants import cheap_thinning, expensive_thinning
 
 def string_to_dict(s):
     if isinstance(s, str) and s.startswith("{") and s.endswith("}"):
@@ -212,46 +215,48 @@ def trial(
         ds_name: str,
         search_id: str,
         config_: dict,
+        search_start_time: float = None, # Safety check for case that time is used up
+        max_time_budget: int = 3600,  
         ):
+    if search_start_time is not None and max_time_budget and (time() - search_start_time) > max_time_budget: 
+        # Abort
+        print(f"TimeOutError: Time Budget of {max_time_budget} seconds exceeded for this trial. Aborting Trial.", flush=True, file=sys.stderr)
+        return {
+            "fitness": inf, 
+            "cost": 1e6, # Punish Cost for Time Out
+            "info": None
+        }
     config = deepcopy(config_)
 
     hp = dict(hyperparameters)
-    thinning_conf = {
-        "num_seq": 3,
-        "num_sample": 1,
-        "num_exp": 4, 
-        "look_ahead_time": 4,
-        "patience_counter": 5,
-        "over_sample_rate": 5,
-        "num_samples_boundary": 5,
-        "dtime_max": 5
-    }
+    thinning_conf = deepcopy(cheap_thinning) 
+    start_time = time()
 
     # Define Fidelity Levels
     fidelity = int(fidelity)
     match fidelity:
-        case 3: # Low Fidelity 
-            max_seq_cnt = 50_000
+        case 4: # Low Fidelity 
+            max_seq_cnt = 5_000 # TODO Increase to 5K
 
-        case 9: # Medium Fidelity
-            max_seq_cnt = 250_000
+        case 16: # Medium Fidelity
+            max_seq_cnt = 25_000
             thinning_conf["num_seq"] = 5
             thinning_conf["num_exp"] = 50
             thinning_conf["look_ahead_time"] = 6
 
-        case 27: # High Fidelity
-            max_seq_cnt = 1_000_000
-            thinning_conf["num_seq"] = 10
-            thinning_conf["num_exp"] = 500
-            thinning_conf["look_ahead_time"] = 10
+        case 64: # High Fidelity
+            max_seq_cnt = 50_000
+            thinning_conf = deepcopy(expensive_thinning)
 
     # Format Config
     hp = {k: to_builtin(v) for k, v in hp.items()}
     model_specs = {key.rsplit("model_specs.")[-1]: value for key, value in hp.items() if key.startswith("model_specs.")}
     model_cfg = {key.rsplit("model.")[-1]: value for key, value in hp.items() if key.startswith("model.")}
     model_cfg["model_specs"] = model_specs
-    trainer_cfg = {key.rsplit("train.")[-1]: value for key, value in hp.items() if key.startswith("train..")}
-    trainer_cfg["metrics"] = ['acc', 'rmse', 'f1_macro', "r2"] 
+    model_cfg["thinning"] = thinning_conf
+    trainer_cfg = {key.rsplit("train.")[-1]: value for key, value in hp.items() if key.startswith("train.")}
+    trainer_cfg["metrics"] = ['acc', 'rmse', 'f1_macro', "smape"] 
+    trainer_cfg["valid_freq"] = 50 # Validate every 50 epochs to speed up HPO 
     config["train"] = {
             "base_config": {
                 "stage": "train",
@@ -265,6 +270,7 @@ def trial(
             "model_config": model_cfg,
         }
     config["data"][ds_name]["train_dir"] = f"ddrg/MUSES/{ds_name}/{max_seq_cnt}" # Limit Train Set Size based on Fidelity Level
+    config["data"][ds_name].pop('test_dir', None) # EasyTPP evals test set after each epoch (Not Good)
     print("Config for this trial: ", config)
 
     config_address = Path(f'../tmp/{model_name}-{ds_name}-{search_id}.yaml') # TODO change for parallel 
@@ -280,7 +286,6 @@ def trial(
     runner_config = Config.build_from_yaml_file(str(config_address), experiment_id="train")
 
 
-    start_time = time()
     model_runner = Runner.build_from_config(runner_config)
 
     model_runner.run()
@@ -293,10 +298,13 @@ def trial(
     config["timestamp"] = datetime.datetime.now().isoformat()
     config["dataset"] = ds_name
     config["model"] = model_name
+    config["fidelity"] = fidelity
+    config["seed"] = seed
     store_complex_dict(config, database_path="../results.db", table_name="trials")
 
+    # Smape is weighted twice as scale is from 0-2 instead of 0-1, --> we multiply it by 1/2 to scale it back to 0-1, but we want it to be as important as the other metrics, hence we multiply it by 2 again, resulting in a final weight of 1 for smape
     results = {
-        "fitness": -1 * eval_results["acc"] - eval_results["f1_macro"] - 2 * max(0, eval_results["r2"]), 
+        "fitness": -1 * eval_results["loglike"], # -1 * eval_results["acc"] - eval_results["f1_macro"] + max(0, eval_results["smape"]),
         "cost": config["trial_time"],
         "info": None
     }

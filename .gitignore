@@ -188,3 +188,4 @@ results.db
 *.out
 *.db
 /hpc/dehb_logs
+tmp_old/

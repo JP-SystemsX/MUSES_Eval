@@ -6,3 +6,4 @@ datasets
 ConfigSpace
 scikit-learn
 dehb
+gluonts

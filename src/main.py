@@ -28,6 +28,9 @@ from datasets import load_dataset
 import torch
 from dehb import DEHB
 from functools import partial
+from gluonts.evaluation.metrics import smape
+from constants import expensive_thinning, cheap_thinning
+
 
 os.chdir(Path(__file__).parent)
 
@@ -57,15 +60,17 @@ def _build_input_from_json(self, source_dir, split):
         data = load_dataset(source_dir, ds_name, split=split_mapped)
     elif source_dir.count('/') == 3: # Load and Cap Hugging Face dataset for HPO to speed it up, format should be "ddrg/MUSES/ds_name/ds_length_cap"
         source_dir, ds_name, ds_length_cap = source_dir.rsplit('/', 2)
+        ds_length_cap = int(ds_length_cap)
         data = load_dataset(source_dir, ds_name, split=split_mapped)
-        if split_mapped == 'train' and len(data) > int(ds_length_cap):  # Cap training set to specified number of samples for HPO to speed it up
-            data = data.shuffle(seed=42).select(range(int(ds_length_cap)))
+        if split_mapped in ['train', "validation"] and len(data) > ds_length_cap:  # Cap training set to specified number of samples for HPO to speed it up
+            data = data.shuffle(seed=42).select(range(ds_length_cap))
     else:
         raise ValueError("Unsupported source directory format for JSON.")
 
     py_assert(data['dim_process'][0] == self.num_event_types,
                 ValueError, "Inconsistent dim_process in different splits.")
 
+    print(f"Loaded {len(data)} sequences from {source_dir} for split {split}.")
     return {
         'time_seqs': data['time_since_start'],
         'type_seqs': data['type_event'],
@@ -193,11 +198,29 @@ def r2_metric_function(predictions, labels, **kwargs):
     return r2_score(label, pred)
 
 
+@MetricsHelper.register(name='smape', direction=MetricsHelper.MINIMIZE, overwrite=False)
+def smape_metric_function(predictions, labels, **kwargs):
+    """Compute SMAPE metrics of the time predictions."""
+    seq_mask = kwargs.get('seq_mask')
+    if seq_mask is None or len(seq_mask) == 0:
+        # If mask is empty or None, use all predictions
+        pred = predictions[PredOutputIndex.TimePredIndex]
+        label = labels[PredOutputIndex.TimePredIndex]
+    else:
+        pred = predictions[PredOutputIndex.TimePredIndex][seq_mask]
+        label = labels[PredOutputIndex.TimePredIndex][seq_mask]
+
+    pred = np.reshape(pred, [-1])
+    label = np.reshape(label, [-1])
+    return smape(label, pred) 
+
+
 
 app = Typer(pretty_exceptions_enable=False)
 
 @app.command()
 def main(data_id: int = 2, model_id: int = 2, trial_count: int = 2, seed: int = 42):
+    SEARCH_DURATION = 24 * 3600 # TODO 48 * 3600  # 48 hours in seconds
     search_id = uuid.uuid4()
     set_seed(seed)
 
@@ -222,8 +245,9 @@ def main(data_id: int = 2, model_id: int = 2, trial_count: int = 2, seed: int = 
                 return
 
     # save config to yaml
-    config_address = Path(f'../tmp/{model_name}-{ds_name}-{search_id}-best.yaml')
-    config_address.parent.mkdir(exist_ok=True, parents=True)
+    train_config_address = Path(f'../tmp/best/{model_name}-{ds_name}-{search_id}-train.yaml')
+    eval_config_address = Path(f'../tmp/best/{model_name}-{ds_name}-{search_id}-eval.yaml')
+    train_config_address.parent.mkdir(exist_ok=True, parents=True)
     config_ = {
         "pipeline_config_id": "runner_config",
         "data":   {
@@ -287,34 +311,39 @@ def main(data_id: int = 2, model_id: int = 2, trial_count: int = 2, seed: int = 
             ds_name=ds_name,
             search_id=search_id,
             config_=config_,
-            seed=seed
+            seed=seed,
+            search_start_time=search_start_time,
+            max_time_budget=SEARCH_DURATION + 60,  # Abort Trials when budget used up (if DEHB does not)
         ),
         dimensions=dim,
-        min_fidelity=3,  # Low Fidelity
-        max_fidelity=27, # High Fidelity
-        eta=3,  
+        min_fidelity=4,  # Low Fidelity
+        max_fidelity=64, # High Fidelity
+        eta=4,  
         n_workers=1, # TODO
         output_path=f"../hpc/dehb_logs/{model_name}_{ds_name}.log",
         seed=seed,
     )
 
     # Run optimization for 1 bracket. Output files will be saved to ./logs
-    traj, runtime, history = optimizer.run(fevals=trial_count, total_cost=48 * 60 * 60)  # Stop after 48 hours or specified number of evaluations
-    # Get all trials
-    history = pd.DataFrame(history, columns=["config_id", "config", "fitness","cost", "fidelity", "info"])
-
+    optimizer.run(fevals=trial_count, total_cost=SEARCH_DURATION)  
     search_duration = time() - search_start_time
-    print(f"Search finished in {search_duration/3600:.2f} hours. Best Config: {traj[-1]}")
+    print(f"Search finished in {search_duration/3600:.2f} hours.")
 
 
     # Get best config from db
     conn = sqlite3.connect("../results.db")
-    df = pd.read_sql_query("SELECT * FROM trials WHERE search_id = ?", conn, params=[str(search_id)])
-    min_rmse = df["rmse"].min()
-    max_rmse = df["rmse"].max()
-    rmse_span = max_rmse - min_rmse
-    df["score"] = df["f1_macro"] + df["acc"] - 2 * ((df["rmse"] - min_rmse) / (rmse_span if rmse_span > 0 else 1))
-    best_row = df.loc[df["score"].idxmax()]
+    df = pd.read_sql_query("""
+    SELECT t.*
+    FROM trials t
+    JOIN (
+        SELECT search_id, MAX(fidelity) AS max_fidelity
+        FROM trials
+        WHERE search_id = ?
+    ) m
+    ON t.search_id = m.search_id
+    AND t.fidelity = m.max_fidelity;
+    """, conn, params=[str(search_id)])
+    best_row = df.loc[df["loglike"].idxmax()]
     print("Best Config: ", best_row)
 
     # Retrain best config
@@ -323,38 +352,52 @@ def main(data_id: int = 2, model_id: int = 2, trial_count: int = 2, seed: int = 
         "data": string_to_dict(best_row["data"]),
         "train": string_to_dict(best_row["train"]),
     }
-    # best_config["train"]["trainer_config"]["metrics"] = []
-    # Upgrade Thinning for Eval
-    best_config["train"]["model_config"]["thinning"] = {
-        "num_seq": 10,
-        "num_sample": 1,
-        "num_exp": 500, # number of i.i.d. Exp(intensity_bound) draws at one time in thinning algorithm
-        "look_ahead_time": 10,
-        "patience_counter": 5, # the maximum iteration used in adaptive thinning
-        "over_sample_rate": 5,
-        "num_samples_boundary": 5,
-        "dtime_max": 5
-        }
+    print("Best Config for Retraining: ", best_config)
     
+    # Upgrade Thinning for Eval
+    best_config["train"]["model_config"]["thinning"] = deepcopy(cheap_thinning)
+    for split in ["train_dir", "valid_dir", "test_dir"]:
+        best_config["data"][ds_name][split] = f"ddrg/MUSES/{ds_name}" # Use full dataset for retraining and evaluation
+    best_config["train"]["trainer_config"]["valid_freq"] = 1 # for early stopping
+    best_config["data"][ds_name].pop("test_dir", None) # EasyTPP evals test set after each epoch (Not Good)
+  
 
-
-    for seed in range(5): 
+    for seed in range(5): # TODO to 5 
         print(f"Retraining with best config, seed {seed}...")
         set_seed(seed)
 
         # Also adjust seed of the trainer
         best_config["train"]["trainer_config"]["seed"] = seed
-        with open(config_address, 'w') as f:
+        best_config["train"]["base_config"]["base_dir"] = f"../checkpoints/{ds_name}/{model_name}/{seed}" 
+        with open(train_config_address, 'w') as f:
             yaml.safe_dump(best_config, f)
         
-        runner_config = Config.build_from_yaml_file(str(config_address), experiment_id="train")
+        runner_config = Config.build_from_yaml_file(str(train_config_address), experiment_id="train")
 
         model_runner = Runner.build_from_config(runner_config)
 
         model_runner.run()
-        valid_results = model_runner.evaluate(return_all_metrics=True)
-        test_results = model_runner.evaluate(model_runner._data_loader.test_loader(), return_all_metrics=True) 
-        train_results = model_runner.evaluate(model_runner._data_loader.train_loader(), return_all_metrics=True) # To check for overfitting
+
+        #ing Eval is more expensive than training Due to Thinn --> Reduce Other consumption to compensate
+        best_config_eval = deepcopy(best_config)
+        best_config_eval["train"]["model_config"]["thinning"] = deepcopy(expensive_thinning)
+        best_config_eval["train"]["base_config"]["stage"] = "eval"
+        best_config_eval["data"][ds_name]["test_dir"] = f"ddrg/MUSES/{ds_name}" 
+        best_config_eval["train"]["trainer_config"]["max_epoch"] = 1 
+        best_config_eval["train"]["trainer_config"]["batch_size"] = 8
+        best_config_eval["train"]["model_config"]["pretrained_model_dir"] =  model_runner.runner_config.base_config.specs['saved_model_dir']
+        best_config_eval["eval"] = best_config_eval["train"] # Lets call experiment_id "eval" now
+        best_config_eval.pop("train")
+        with open(eval_config_address, 'w') as f:
+            yaml.safe_dump(best_config_eval, f)
+
+        runner_config_eval = Config.build_from_yaml_file(str(eval_config_address), experiment_id="eval")
+        model_runner_eval = Runner.build_from_config(runner_config_eval)
+
+
+        valid_results = model_runner_eval.evaluate(return_all_metrics=True)
+        test_results = model_runner_eval.evaluate(model_runner_eval._data_loader.test_loader(), return_all_metrics=True) 
+        train_results = model_runner_eval.evaluate(model_runner_eval._data_loader.train_loader(), return_all_metrics=True) # To check for overfitting
 
         results = deepcopy(best_config)
         results["seed"] = seed
@@ -365,12 +408,14 @@ def main(data_id: int = 2, model_id: int = 2, trial_count: int = 2, seed: int = 
         for split, r in[("valid", valid_results), ("test", test_results), ("train", train_results)]:
             for metric_name, metric_value in r.items():
                 results[f"{split}_{metric_name}"] = metric_value
-
+        print("Final Results: ", results)
         store_complex_dict(results, database_path="../results.db", table_name="final_results")
+        print(f"Seed {seed} Finished!")
     
     # Mark as finished
     with open(done_file, "a", encoding="utf-8") as f:
         f.write(f"{model_name}|{ds_name}\n")
+    print(f"Finished {model_name} on {ds_name}!")
 
 
 
