@@ -3,7 +3,7 @@
 #SBATCH --gres=gpu:1 # GPU Count
 #SBATCH --nodes=1
 #SBATCH --mem=180G # Working Memory
-#SBATCH --time=60:00:00  # TODO Should take at most 20h but in rare exceptions might take longer 
+#SBATCH --time=60:00:00  # Should take at most 24h but in rare exceptions might take longer 
 #SBATCH --account=p_ml_il
 #SBATCH --job-name=DUESE
 #SBATCH --output=hpc/logs/DUESE-%j-%a.out  # Output Address 
