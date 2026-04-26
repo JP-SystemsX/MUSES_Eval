@@ -189,3 +189,4 @@ results.db
 *.db
 /hpc/dehb_logs
 tmp_old/
+bad_configs

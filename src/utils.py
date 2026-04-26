@@ -236,7 +236,7 @@ def trial(
     fidelity = int(fidelity)
     match fidelity:
         case 4: # Low Fidelity 
-            max_seq_cnt = 5_000 # TODO Increase to 5K
+            max_seq_cnt = 5_000 
 
         case 16: # Medium Fidelity
             max_seq_cnt = 25_000
@@ -304,7 +304,7 @@ def trial(
 
     # Smape is weighted twice as scale is from 0-2 instead of 0-1, --> we multiply it by 1/2 to scale it back to 0-1, but we want it to be as important as the other metrics, hence we multiply it by 2 again, resulting in a final weight of 1 for smape
     results = {
-        "fitness": -1 * eval_results["loglike"], # -1 * eval_results["acc"] - eval_results["f1_macro"] + max(0, eval_results["smape"]),
+        "fitness": -1 * eval_results["acc"] + 0.2 * max(0, eval_results["smape"]), # Optimizing Loglike leads to inferior results
         "cost": config["trial_time"],
         "info": None
     }

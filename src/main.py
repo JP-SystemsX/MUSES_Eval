@@ -220,7 +220,7 @@ app = Typer(pretty_exceptions_enable=False)
 
 @app.command()
 def main(data_id: int = 2, model_id: int = 2, trial_count: int = 2, seed: int = 42):
-    SEARCH_DURATION = 24 * 3600 # TODO 48 * 3600  # 48 hours in seconds
+    SEARCH_DURATION = 24 * 3600 # 24 hours in seconds
     search_id = uuid.uuid4()
     set_seed(seed)
 
@@ -343,7 +343,8 @@ def main(data_id: int = 2, model_id: int = 2, trial_count: int = 2, seed: int = 
     ON t.search_id = m.search_id
     AND t.fidelity = m.max_fidelity;
     """, conn, params=[str(search_id)])
-    best_row = df.loc[df["loglike"].idxmax()]
+    df["score"] = df["acc"] - 0.2 * df["smape"] 
+    best_row = df.loc[df["score"].idxmax()]
     print("Best Config: ", best_row)
 
     # Retrain best config
@@ -362,7 +363,7 @@ def main(data_id: int = 2, model_id: int = 2, trial_count: int = 2, seed: int = 
     best_config["data"][ds_name].pop("test_dir", None) # EasyTPP evals test set after each epoch (Not Good)
   
 
-    for seed in range(5): # TODO to 5 
+    for seed in range(5): 
         print(f"Retraining with best config, seed {seed}...")
         set_seed(seed)
 
@@ -372,11 +373,13 @@ def main(data_id: int = 2, model_id: int = 2, trial_count: int = 2, seed: int = 
         with open(train_config_address, 'w') as f:
             yaml.safe_dump(best_config, f)
         
+        # Train
+        train_start_time = time()
         runner_config = Config.build_from_yaml_file(str(train_config_address), experiment_id="train")
-
         model_runner = Runner.build_from_config(runner_config)
-
         model_runner.run()
+        train_duration = time() - train_start_time
+
 
         #ing Eval is more expensive than training Due to Thinn --> Reduce Other consumption to compensate
         best_config_eval = deepcopy(best_config)
@@ -395,9 +398,11 @@ def main(data_id: int = 2, model_id: int = 2, trial_count: int = 2, seed: int = 
         model_runner_eval = Runner.build_from_config(runner_config_eval)
 
 
-        valid_results = model_runner_eval.evaluate(return_all_metrics=True)
+        # valid_results = model_runner_eval.evaluate(return_all_metrics=True)
+        test_start_time = time()
         test_results = model_runner_eval.evaluate(model_runner_eval._data_loader.test_loader(), return_all_metrics=True) 
-        train_results = model_runner_eval.evaluate(model_runner_eval._data_loader.train_loader(), return_all_metrics=True) # To check for overfitting
+        inference_duration = time() - test_start_time
+        # train_results = model_runner_eval.evaluate(model_runner_eval._data_loader.train_loader(), return_all_metrics=True) # To check for overfitting
 
         results = deepcopy(best_config)
         results["seed"] = seed
@@ -405,7 +410,9 @@ def main(data_id: int = 2, model_id: int = 2, trial_count: int = 2, seed: int = 
         results["model"] = model_name
         results["search_id"] = str(search_id)
         results["search_duration"] = search_duration
-        for split, r in[("valid", valid_results), ("test", test_results), ("train", train_results)]:
+        results["train_duration"] = train_duration
+        results["inference_duration"] = inference_duration
+        for split, r in[("test", test_results)]: #, ("train", train_results) ("valid", valid_results)]
             for metric_name, metric_value in r.items():
                 results[f"{split}_{metric_name}"] = metric_value
         print("Final Results: ", results)
