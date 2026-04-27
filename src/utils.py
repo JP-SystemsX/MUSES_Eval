@@ -236,16 +236,16 @@ def trial(
     fidelity = int(fidelity)
     match fidelity:
         case 4: # Low Fidelity 
-            max_seq_cnt = 5_000 
+            max_event_cnt = 100_000 
 
         case 16: # Medium Fidelity
-            max_seq_cnt = 25_000
+            max_event_cnt = 500_000
             thinning_conf["num_seq"] = 5
             thinning_conf["num_exp"] = 50
             thinning_conf["look_ahead_time"] = 6
 
         case 64: # High Fidelity
-            max_seq_cnt = 50_000
+            max_event_cnt = 2_000_000
             thinning_conf = deepcopy(expensive_thinning)
 
     # Format Config
@@ -269,7 +269,7 @@ def trial(
             "trainer_config": trainer_cfg,
             "model_config": model_cfg,
         }
-    config["data"][ds_name]["train_dir"] = f"ddrg/MUSES/{ds_name}/{max_seq_cnt}" # Limit Train Set Size based on Fidelity Level
+    config["data"][ds_name]["train_dir"] = f"ddrg/MUSES/{ds_name}/{max_event_cnt}" # Limit Train Set Size based on Fidelity Level
     config["data"][ds_name].pop('test_dir', None) # EasyTPP evals test set after each epoch (Not Good)
     print("Config for this trial: ", config)
 

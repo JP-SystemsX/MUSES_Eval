@@ -30,6 +30,7 @@ from dehb import DEHB
 from functools import partial
 from gluonts.evaluation.metrics import smape
 from constants import expensive_thinning, cheap_thinning
+import pyarrow.compute as pc
 
 
 os.chdir(Path(__file__).parent)
@@ -62,8 +63,11 @@ def _build_input_from_json(self, source_dir, split):
         source_dir, ds_name, ds_length_cap = source_dir.rsplit('/', 2)
         ds_length_cap = int(ds_length_cap)
         data = load_dataset(source_dir, ds_name, split=split_mapped)
-        if split_mapped in ['train', "validation"] and len(data) > ds_length_cap:  # Cap training set to specified number of samples for HPO to speed it up
-            data = data.shuffle(seed=42).select(range(ds_length_cap))
+        col = data.data.column("type_event")
+        event_count = pc.sum(pc.list_value_length(col)).as_py()
+        if split_mapped in ['train', "validation"] and event_count > ds_length_cap:  # Cap training set to specified number of samples for HPO to speed it up
+            seq_count = int(len(data) * ds_length_cap / event_count) + 1
+            data = data.shuffle(seed=42).select(range(seq_count))
     else:
         raise ValueError("Unsupported source directory format for JSON.")
 
