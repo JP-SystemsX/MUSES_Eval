@@ -1,17 +1,16 @@
 # MUSES: A Curated Benchmark Suite of Event Sequences for Comparing Temporal Point Processes
 
 <img src="figures/logo-light.svg#gh-light-mode-only"
-     style="float: right; width: 120px; margin-left: 16px;" />
+     align="right"
+     width="300" />
 <img src="figures/logo-dark.svg#gh-dark-mode-only"
-     style="float: right; width: 120px; margin-left: 16px;" />
-
-
+     align="right"
+     width="300" />
 This repository is the official implementation of the benchmark study conducted in [MUSES: A Curated Benchmark Suite of Event Sequences for Comparing Temporal Point Processes](todo). 
 
-
+<br clear="both">
  
-
-<h2 style="clear: both;">Requirements</h2>
+ ## Requirements
 
 Setup a `Python 3.11.5` environment and install all dependencies:
 
