@@ -236,16 +236,16 @@ def trial(
     fidelity = int(fidelity)
     match fidelity:
         case 4: # Low Fidelity 
-            max_event_cnt = 100_000 
+            max_event_cnt = 50_000 
 
         case 16: # Medium Fidelity
-            max_event_cnt = 500_000
+            max_event_cnt = 250_000
             thinning_conf["num_seq"] = 5
             thinning_conf["num_exp"] = 50
             thinning_conf["look_ahead_time"] = 6
 
         case 64: # High Fidelity
-            max_event_cnt = 2_000_000
+            max_event_cnt = 1_000_000
             thinning_conf = deepcopy(expensive_thinning)
 
     # Format Config

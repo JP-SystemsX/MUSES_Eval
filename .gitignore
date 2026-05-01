@@ -190,3 +190,4 @@ results.db
 /hpc/dehb_logs
 tmp_old/
 bad_configs
+good_but_still_too_slow
