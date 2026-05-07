@@ -22,7 +22,7 @@ pip install -r requirements.txt
 
 To perform the benchmark study, one has to run `./src/main.py --data-id <DATA_ID> --model-id <MODEL_ID>` with various data and model IDs. 
 `DATA_ID` indicates the number of the dataset in [MUSES](https://huggingface.co/datasets/ddrg/MUSES) alphabetical ordering.
-`MODEL_ID` indicates the number of the model in the `./configs` alphabetical ordering.
+`MODEL_ID` indicates the number of the model in the `./configs` folder in alphabetical ordering.
 
 We provide a slurm script to easily start the benchmark study on a cluster in `hpc/run_bench.sh`.
 
@@ -37,21 +37,26 @@ The final models are saved under `./checkpoints/<dataset_name>/<model_name>/<see
 
 Note: You might also need to adjust `./hpc/modules.sh` to load the correct modules for your cluster.
 
+## Evaluation
+
+We provide a notebook to evaluate (or rather visualize) the results of the benchmark study in `./analysis/benchmark.ipynb`.
+This allows to convert the raw results into latex tables, calculate normalized errors, create Critical Difference Diagrams, and more.
+
+
 ## Results
 
-By running our benchmark we achieved the following results across 5 seeds :
-# TODO
+By running our benchmark we achieved the following normalized results across 5 seeds and 18 datasets:
 
-### [Image Classification on ImageNet](https://paperswithcode.com/sota/image-classification-on-imagenet)
 
-| Model name         | Top 1 Accuracy  | Top 5 Accuracy |
-| ------------------ |---------------- | -------------- |
-| My awesome model   |     85%         |      95%       |
+| Metric | NHP | RMTPP | S2P2 | SAHP | THP |
+|---|---:|---:|---:|---:|---:|
+| Acc | **0.53** | 0.80 | 0.85 | 0.67 | 0.60 |
+| RMSE | 0.75 | 0.60 | 0.90 | **0.59** | 0.72 |
+| Compute | 0.95 | **0.17** | 0.93 | 0.75 | 0.88 |
+| Objective | **0.40** | 0.88 | 0.78 | 0.81 | 0.69 |
 
 
 Note: The exact results may vary depending on how fast the Hardware is, as this allows the optimizer to evaluate more or less configs leading to different outcomes
 
 
-## Contributing
 
->📋  Pick a licence and describe how to contribute to your code repository. 
