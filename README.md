@@ -12,11 +12,22 @@ This repository is the official implementation of the benchmark study conducted 
  
  ## Requirements
 
+Clone the repository and navigate to the project folder:
+
+```setup
+git clone https://github.com/JP-SystemsX/MUSES_Eval.git
+cd MUSES_Eval
+```
+
 Setup a `Python 3.11.5` environment and install all dependencies:
 
 ```setup
+python3 -m venv --system-site-package ./venv
+source ./venv/bin/activate
 pip install -r requirements.txt
 ```
+Verify that torch is installed with the correct CUDA version for your system.
+If not please install the correct version of torch for your system see [here](https://pytorch.org/get-started/previous-versions/).
 
 ## Benchmark Study
 
